@@ -1,25 +1,40 @@
 package com.assignment.twitterservice.service;
 
+import java.io.BufferedReader;
+import java.io.FileNotFoundException;
+import java.io.FileOutputStream;
+import java.io.IOException;
+import java.io.InputStream;
+import java.io.InputStreamReader;
+import java.io.PrintStream;
+import java.text.DateFormat;
+import java.text.SimpleDateFormat;
+import java.time.Instant;
 import java.util.ArrayList;
+import java.util.Comparator;
+import java.util.LinkedHashMap;
 import java.util.List;
-import java.util.concurrent.ArrayBlockingQueue;
-import java.util.concurrent.BlockingQueue;
+import java.util.Locale;
+import java.util.Map;
+import java.util.Set;
+import java.util.TreeMap;
+import java.util.TreeSet;
+import java.util.concurrent.TimeUnit;
+import java.util.stream.Collectors;
 
-import javax.annotation.PostConstruct;
-import javax.inject.Inject;
 
-import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.beans.factory.annotation.Value;
-import org.springframework.scheduling.concurrent.ThreadPoolTaskExecutor;
-import org.springframework.social.twitter.api.FilterStreamParameters;
-import org.springframework.social.twitter.api.Stream;
-import org.springframework.social.twitter.api.StreamDeleteEvent;
-import org.springframework.social.twitter.api.StreamListener;
-import org.springframework.social.twitter.api.StreamWarningEvent;
-import org.springframework.social.twitter.api.Tweet;
-import org.springframework.social.twitter.api.Twitter;
 import org.springframework.stereotype.Service;
-import org.springframework.ui.Model;
+
+import com.assignment.twitterservice.authentication.TwitterAuthenticator;
+import com.assignment.twitterservice.dto.Messages;
+import com.assignment.twitterservice.dto.Users;
+import com.assignment.twitterservice.exceptions.TwitterAuthenticationException;
+import com.fasterxml.jackson.databind.ObjectMapper;
+import com.google.api.client.http.GenericUrl;
+import com.google.api.client.http.HttpRequest;
+import com.google.api.client.http.HttpRequestFactory;
+import com.google.api.client.http.HttpResponse;
 
 /**
  * @author Merlin
@@ -27,111 +42,101 @@ import org.springframework.ui.Model;
  */
 @Service
 public class TwitterStreamingService {
+
+	private String filename = System.getProperty("user.home")+"/output.txt";
+	@Value("${spring.social.twitter.app-id}")
+	private String consumerKey;
+	@Value("${spring.social.twitter.app-secret}")
+	private String consumerSecret;
+
+	public void streamMessages(int timeLimit, int tweetLimit) throws InterruptedException, IOException {
+
+		List<Messages> tweets = filterStreamingData(authenticateTwitterApi(), timeLimit, tweetLimit);
+
+		Comparator<Messages> usrComparator = (h1, h2) ->h1.getUser().getCreatedAt().compareTo(h2.getUser().getCreatedAt());
+		tweets.sort(usrComparator.reversed());
+		
+		Map<String, List<Messages>> resultMap = new LinkedHashMap<>();
+		for(Messages tweet : tweets) {
+			
+			String userId = tweet.getUser().getId();
+			if (!resultMap.containsKey(userId)) {
+				List<Messages> list = new ArrayList<Messages>();
+				
+			    list.add(tweet);
 	
-	@Autowired
-	Twitter twitter;
-
-	/*@Inject
-	private ThreadPoolTaskExecutor taskExecutor;
-
-	@Value("${twitterProcessing.enabled}")
-	private boolean processingEnabled;
-
-	private BlockingQueue<Tweet> queue = new ArrayBlockingQueue<>(20);
-
-	public void run() {
-		List<StreamListener> listeners = new ArrayList<>();
-		FilterStreamParameters fsp = new FilterStreamParameters();
-		fsp.track("bieber");
-		listeners.add(this);
-		twitter.streamingOperations().filter(fsp, listeners);
-	}
-
-	@PostConstruct
-	public void init() throws Exception {
-		System.out.println("processingEnabled---------------->"+processingEnabled);
-		if (processingEnabled) {
-			for (int i = 0; i < taskExecutor.getMaxPoolSize(); i++) {
-				taskExecutor.execute(new MessageProcessor(queue));
+			    resultMap.put(userId, list);
+			} else {
+				resultMap.get(userId).add(tweet);
 			}
-
-			run();
 		}
+
+		for(List<Messages> resultList : resultMap.values()) {
+			
+			Comparator<Messages> msgComparator = (h1, h2) -> h1.getCreatedAt().compareTo(h2.getCreatedAt());
+			resultList.sort(msgComparator.reversed());
+		}
+		
+		resultMap.forEach((key,value)->{
+			System.out.println("--------------------------------------------------------------------------------");
+			System.out.println("Author : " + key);
+			System.out.println();
+			for(Messages tweet : value) {
+				System.out.println("Message Id : "+tweet.getId()+", Message Created Date : "+tweet.getCreatedAt()+", User Created Date : "+tweet.getUser().getCreatedAt()+" User Id : "+tweet.getUser().getId()+
+						", Message Text : "+tweet.getText()+", User Name : "+tweet.getUser().getName()+", User Screen Name : "+tweet.getUser().getScreenName());
+			}
+		});
 	}
 
-	@Override
-	public void onTweet(Tweet tweet) {
-		queue.offer(tweet);
+	private List<Messages> filterStreamingData(HttpRequestFactory httpRequestFactory, int timeLimit, int tweetLimit) throws IOException {
+		
+		List<Messages> tweets = new ArrayList<>();
+		
+		ObjectMapper mapper = new ObjectMapper();
+		DateFormat dateFormat = new SimpleDateFormat("EEE MMM dd HH:mm:ss Z yyyy", Locale.getDefault());
+		mapper.setDateFormat(dateFormat);
+		
+		HttpRequest httpRequest = httpRequestFactory.buildGetRequest(new GenericUrl("https://stream.twitter.com/1.1/statuses/filter.json?track=bieber"));
+		HttpResponse response = httpRequest.execute();
+		InputStream in = response.getContent();
+		
+		String line = null;
+		int noOfTweets = 0;
+		long initialTime = Instant.now().getEpochSecond();
+		
+		try (BufferedReader reader = new BufferedReader(new InputStreamReader(in))) {
+		
+			while ((line = reader.readLine()) != null && (noOfTweets < tweetLimit && (Instant.now().getEpochSecond() - initialTime) <= timeLimit)) {
+				
+				noOfTweets ++;
+				tweets.add(mapper.readValue(line, Messages.class));
+			}
+		}
+		return tweets;
 	}
 
-	@Override
-	public void onDelete(StreamDeleteEvent deleteEvent) {
+	private HttpRequestFactory authenticateTwitterApi() {
+
+		HttpRequestFactory httpRequestFactory = null;
+		try {
+			PrintStream printStream = new PrintStream(new FileOutputStream(filename));
+			TwitterAuthenticator authenticator = new TwitterAuthenticator(printStream, consumerKey, consumerSecret);
+
+			httpRequestFactory =  authenticator.getAuthorizedHttpRequestFactory();
+		} catch (FileNotFoundException e1) {
+			// TODO Auto-generated catch block
+			e1.printStackTrace();
+		} catch (TwitterAuthenticationException e) {
+			// TODO Auto-generated catch block
+			e.printStackTrace();
+		}
+		return httpRequestFactory;
 	}
 
-	@Override
-	public void onLimit(int numberOfLimitedTweets) {
-	}
-
-	@Override
-	public void onWarning(StreamWarningEvent warningEvent) {
-	}*/
-
-	public Model streamApi(Model model, int time) throws InterruptedException {
-		List<Tweet> tweets = new ArrayList<>();
+	private void trackMessagesPerSecond(long count, int noOfTweets) {
 		
-	
+		System.out.println("count" + count + "nof of tweets" + noOfTweets);
 		
-		
-
-		List<StreamListener> listeners = new ArrayList<StreamListener>();
-		StreamListener streamListener = new StreamListener() {
-
-			@Override
-			public void onWarning(StreamWarningEvent warningEvent) {
-				// TODO Auto-generated method stub
-
-			}
-
-			@Override
-			public void onTweet(Tweet tweet) {
-				System.out.println(tweet.getUser().getName() + " : " + tweet.getText());
-				tweets.add(tweet);
-				model.addAttribute("tweets", tweets);
-			}
-
-			@Override
-			public void onLimit(int numberOfLimitedTweets) {
-				// TODO Auto-generated method stub
-
-			}
-
-			@Override
-			public void onDelete(StreamDeleteEvent deleteEvent) {
-				// TODO Auto-generated method stub
-
-			}
-		};
-		
-		listeners.add(streamListener);
-		
-		/*FilterStreamParameters fsp = new FilterStreamParameters();
-		fsp.track("bieber");*/
-		 //This sets the GeoCode (-122.75,36.8,-121.75,37.8) of San Francisco(South-West and North-East) region as given in below twitter docs
-        //https://dev.twitter.com/streaming/overview/request-parameters#locations
-        Float west=-122.75f;
-        Float south=36.8f;
-        Float east=-121.75f;
-        Float north = 37.8f;
-
-        FilterStreamParameters filterStreamParameters = new FilterStreamParameters();
-        filterStreamParameters.addLocation(west, south, east, north);
-		
-
-		Stream userStream = twitter.streamingOperations().filter(filterStreamParameters, listeners);
-		System.out.println("userStream------>"+userStream.toString());
-		Thread.sleep(time);
-		userStream.close();
-		return model;
 	}
 
 }
