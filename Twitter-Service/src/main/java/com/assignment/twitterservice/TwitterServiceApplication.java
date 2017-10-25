@@ -25,7 +25,7 @@ public class TwitterServiceApplication implements CommandLineRunner {
 	
 	public void run(String... arg0) throws Exception {
 
-		//create a file in user home
+		//create a file in user home for storing all the logs
 
 		File file = new File(System.getProperty("user.home")+"/output.txt");
 		if(!file.exists()) {
@@ -36,14 +36,17 @@ public class TwitterServiceApplication implements CommandLineRunner {
 			}
 		}
 
+		System.out.println("--------------Calls a restService for streaming data from Twitter-------------->");
+		
 		RestTemplate restTemplate = new RestTemplate();
 
-		String url = "http://localhost:8080/stream/{timeLimit}/{tweetLimit}";
+		String url = "http://localhost:8080/stream/{timeLimit}/{tweetLimit}/{trackParameter}";
 
 		// URI (URL) parameters
 		Map<String, String> uriParams = new HashMap<String, String>();
 		uriParams.put("timeLimit", "30");
 		uriParams.put("tweetLimit", "100");
+		uriParams.put("trackParameter", "bieber");
 
 		UriComponentsBuilder builder = UriComponentsBuilder.fromUriString(url);
 
@@ -54,6 +57,6 @@ public class TwitterServiceApplication implements CommandLineRunner {
 
 		ResponseEntity<String> response = restTemplate.exchange(builder.buildAndExpand(uriParams).toUri() , HttpMethod.GET, entity, String.class);
 
-		System.out.println("--------------response status-------------->"+response.getStatusCode());
+		System.out.println("--------------Response status-------------->"+response.getStatusCode());
 	}
 }
